@@ -4,25 +4,23 @@
 #include <thread.h>
 #include <9p.h>
 
-static long qcount;
 
 typedef struct Stack Stack;
 typedef struct Dnode Dnode;
 
 struct Stack {
 	long length;
-	Dnode *list;
+	Dnode **list;
 };
 
 struct Dnode {
 	long id;
-	long parent;
-	Stack children;
-	char *type;
-	char *attr;
-	char *text;
-	Qid q;
+	Dnode *parent;
 };
+
+static Stack nodes;
+static long qcount;
+static long ncount;
 
 void
 stackinit(Stack *S)
@@ -35,42 +33,44 @@ stackinit(Stack *S)
 Dnode *
 stackpush(Stack *stack, Dnode *new)
 {
-	stack->list = realloc(stack->list, sizeof(Dnode) * (stack->length + 1));
-	stack->list[stack->length] = *new;
+	stack->list = realloc(stack->list, sizeof(Dnode*) * (stack->length + 1));
+	stack->list[stack->length] = new;
 	stack->length++;
-	return &stack->list[stack->length - 1];
+	return stack->list[stack->length - 1];
 }
 
 
-static Stack nodes;
-static long ncount;
-
 long
-newnode(long parent)
+newnode(Dnode *parent)
 {
 	Dnode *ref;
-	Dnode new = {
-		.id = ncount,
-		.parent = parent,
-		.type = nil,
-		.attr = nil,
-		.text = nil,
-		.q = (Qid){qcount, 0, QTDIR},
-	};
-	stackinit(&new.children);
+	Dnode *new;
+	new = malloc(sizeof(Dnode));
+
+	new->id = ncount,
+	new->parent = parent,
+	new->type = nil,
+	new->attr = nil,
+	new->text = nil,
+	new->q = (Qid){qcount, 0, QTDIR},
+
+	stackinit(&new->children);
 	ncount++;
-	qcount++;
-	ref = stackpush(&nodes, &new);
-	stackpush(&nodes.list[parent].children, ref);
+	qcount += 0x10;
+	ref = stackpush(&nodes, new);
+	stackpush(&parent->children, ref);
 	return ref->id;
 }
 
 Dnode *
 getnode(long n)
 {
-	Dnode *np;
-	for (np = nodes.list; np < nodes.list + nodes.length; np++)
-		if (np->id == n) return np;
+	Dnode **np;
+	for (np = nodes.list; np < nodes.list + nodes.length; np++) {
+		if ((*np)->id == n) {
+			return *np;
+		}
+	}
 	return nil;
 }
 
@@ -78,6 +78,7 @@ void
 fsattach(Req *r)
 {
 	r->fid->qid = getnode(0)->q;
+	r->fid->aux = getnode(0);
 	r->ofcall.qid = r->fid->qid;
 	respond(r, nil);
 }
@@ -94,7 +95,7 @@ dirgen(int n, Dir *dir, void* aux)
 
 	dir->uid = strdup("domfs");
 	dir->gid = strdup("domfs");
-	dir->name = smprint("%ld", N->children.list[n].id);
+	dir->name = smprint("%ld", N->children.list[n]->id);
 	dir->mode = 0555|DMDIR;
 	dir->qid = getnode(n)->q;
 
@@ -104,17 +105,33 @@ dirgen(int n, Dir *dir, void* aux)
 void
 fsread(Req *r)
 {
-	dirread9p(r, dirgen, getnode(0));
+	Dnode *node;
+	node = r->fid->aux;
+	dirread9p(r, dirgen, node);
 	respond(r, nil);
+}
+
+char*
+fsclone(Fid *oldfid, Fid *newfid)
+{
+	//fprint(2, "fsclone oldfid=%p newfid=%p\n", oldfid->aux, newfid->aux);
+	newfid->aux = oldfid->aux;
+	return nil;
 }
 
 char*
 fswalk1(Fid *fid, char *name, Qid *qid)
 {
-	fprint(2, "fswalk1 fid->qid.path=%ulld name=%s\n", fid->qid.path, name);
-
-	*qid = (Qid){0, 0, QTDIR};
+	long id;
+	char *chp;
+	Dnode *node;
+	// TODO: check if name is one of control files
+	id = strtol(name, &chp, 10);
+	if (chp == name) return "not found";
+	node = getnode(id);
+	*qid = node->q;
 	fid->qid = *qid;
+	fid->aux = getnode(id);
 	return nil;
 }
 
@@ -134,9 +151,10 @@ fsstat(Req *r)
 	case 0:
 		r->d.qid = (Qid){0, 0, QTDIR};
 		r->d.name = strdup("/");
+		r->fid->aux = getnode(0);
 		break;
 	default:
-		r->d.qid = (Qid){r->fid->qid.path, 0, QTDIR};
+		r->d.qid = r->fid->qid;
 		r->d.name = smprint("%ulld", r->fid->qid.path);
 	};
 	r->d.mode = 0777|DMDIR;
@@ -172,13 +190,15 @@ main(int argc, char **argv)
 	} ARGEND
 	
 	stackinit(&nodes);
-	getnode(newnode(0))->type = "domroot";
-	getnode(newnode(0))->type = "A";
-	getnode(newnode(0))->type = "B";
+	newnode(nodes.list[0]);
+	newnode(nodes.list[0]);
+	newnode(nodes.list[0]);
+	newnode(getnode(1));
 
 	Srv fs = {
 		.attach = fsattach,
 		.read = fsread,
+		.clone = fsclone,
 		.walk1 = fswalk1,
 		.stat = fsstat,
 	};
