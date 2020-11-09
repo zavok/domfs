@@ -64,4 +64,7 @@ struct Node {
 	char *wholeText;
 /* ProcessingInstruction specific */
 	char *target;
+/* CharacterDataSpecific */
+	char *data;
+	ulong length;
 };
