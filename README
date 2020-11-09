@@ -4,7 +4,7 @@ requirements.  And with back-of-the-envelope projections, you will
 need super computer clusters to access WWW in the future.
 
 Domfs aims to be a part of the future, by implementing one part of web
-browser responsible for upkeep of Display Object Model in simple and
+browser responsible for upkeep of Document Object Model in simple and
 content-agnostic way and providing shared environment for other
 processes via magic of 9p.
 
