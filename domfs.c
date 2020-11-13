@@ -4,69 +4,129 @@
 #include <thread.h>
 #include <9p.h>
 
+typedef struct Finf Finf; /* file info */
+typedef struct DTree DTree;
+typedef struct Node Node;
 
-typedef struct Stack Stack;
-typedef struct Dnode Dnode;
-
-struct Stack {
-	long length;
-	Dnode **list;
+enum { /* file types */
+	ROOT,
+	TREE,
+	NODE,
+	CTRL,
+	USER,
 };
 
-struct Dnode {
-	long id;
-	Dnode *parent;
+struct Finf {
+	uvlong id;
+	Qid qid;
+	int type;
+	void *aux;
 };
 
-static Stack nodes;
-static long qcount;
-static long ncount;
+struct DTree {
+	Node **nodes;
+	uvlong id;
+	uvlong nidcount;
+	Finf *finf;
+};
 
-void
-stackinit(Stack *S)
-{
-	S->length = 0;
-	S->list = nil;
-	return;
-}
+struct Node {
+	Node *parent;
+	Node **children;
+	uvlong id;
+	Finf *finf;
+};
 
-Dnode *
-stackpush(Stack *stack, Dnode *new)
-{
-	stack->list = realloc(stack->list, sizeof(Dnode*) * (stack->length + 1));
-	stack->list[stack->length] = new;
-	stack->length++;
-	return stack->list[stack->length - 1];
-}
+Finf **files, *rootf;
 
+DTree **trees;
+static uvlong tcount;
 
 long
-newnode(Dnode *parent)
+stacksize(void **v)
 {
-	Dnode *ref;
-	Dnode *new;
-	new = malloc(sizeof(Dnode));
-
-	new->id = ncount,
-	new->parent = parent,
-	new->type = nil,
-	new->attr = nil,
-	new->text = nil,
-	new->q = (Qid){qcount, 0, QTDIR},
-
-	stackinit(&new->children);
-	ncount++;
-	qcount += 0x10;
-	ref = stackpush(&nodes, new);
-	stackpush(&parent->children, ref);
-	return ref->id;
+	long n;
+	if (v == nil) return 0;
+	for (n = 0; *v != nil; v++) n++;
+	return n;
 }
 
-Dnode *
-getnode(long n)
+void
+stackpush(void ***v, void *new)
 {
-	Dnode **np;
-	for (np = nodes.list; np < nodes.list + nodes.length; np++) {
+	long n;
+	n = stacksize(*v);
+	*v = realloc(*v, (n + 2) * sizeof(void*));
+	(*v)[n] = new;
+	(*v)[n+1] = nil;
+}
+
+Finf*
+newfinf(int type, void *aux)
+{
+	static uvlong id;
+	Finf *new;
+	new = malloc(sizeof(Finf));
+	switch (type) {
+	case ROOT:
+	case TREE:
+	case NODE:
+			new->qid = (Qid){id, 0, QTDIR};
+			break;
+	case CTRL:
+	case USER:
+			new->qid = (Qid){id, 0, QTFILE};
+			break;
+	default:
+			sysfatal("newfinf: unknown file type %d", type);
+	}
+	new->type = type;
+	new->aux = aux;
+	id++;
+	return new;
+}
+
+DTree*
+newtree(void)
+{
+	static uvlong id;
+	DTree *new;
+	new = malloc(sizeof(DTree));
+	new->nodes = nil;
+	new->id = ++id;
+	new->nidcount = 0;
+	new->finf = newfinf(TREE, new);
+	stackpush(&files, new->finf);
+	return new;
+}
+
+DTree*
+gettree(DTree **trees, uvlong id)
+{
+	DTree *tp;
+	for (tp = trees[0]; tp != nil; tp++)
+		if (tp->id == id) return tp;
+	return nil;
+}
+
+Node*
+newnode(DTree *T)
+{
+	Node *new;
+	new = malloc(sizeof(Node));
+	new->parent = nil;
+	new->children = nil;
+	new->id = ++T->nidcount;
+	new->finf = newfinf(NODE, new);
+	stackpush(&files, new->finf);
+	return new;
+}
+
+Node*
+getnode(DTree *T, uvlong n)
+{
+	Node **np;
+	for (np = T->nodes; np != nil; np++) {
 		if ((*np)->id == n) {
 			return *np;
 		}
@@ -77,44 +137,78 @@ getnode(long n)
 void
 fsattach(Req *r)
 {
-	r->fid->qid = getnode(0)->q;
-	r->fid->aux = getnode(0);
+	r->fid->qid = rootf->qid;
+	r->fid->aux = rootf;
 	r->ofcall.qid = r->fid->qid;
 	respond(r, nil);
 }
 
 int
-dirgen(int n, Dir *dir, void* aux)
+dirgenroot(int n, Dir *dir, void*)
 {
-	Dnode *N;
-	if (aux == nil) return -1;
-	N = aux;
-	// TODO: do it properly
-
-	if (n >= N->children.length) return -1;
-
+	DTree *t;
+	t = trees[n];
+	if (t == nil) return -1;
+	nulldir(dir);
+	dir->qid = t->finf->qid;
+	dir->mode = 0777 | DMDIR;
+	dir->atime = time(0);
+	dir->mtime = time(0);
+	dir->length = 0;
+	dir->name = smprint("%ulld", t->id);
 	dir->uid = strdup("domfs");
 	dir->gid = strdup("domfs");
-	dir->name = smprint("%ld", N->children.list[n]->id);
-	dir->mode = 0555|DMDIR;
-	dir->qid = getnode(n)->q;
+	dir->muid = strdup("");
+	return 0;
+}
 
+int
+dirgentree(int n, Dir *dir, void *aux)
+{
+	DTree *tree;
+	Node *node;
+	tree = aux;
+	node = tree->nodes[n];
+	if (node == nil) return -1;
+	nulldir(dir);
+	dir->qid = node->finf->qid;
+	dir->mode = 0777 | DMDIR;
+	dir->atime = time(0);
+	dir->mtime = time(0);
+	dir->length = 0;
+	dir->name = smprint("%ulld", node->id);
+	dir->uid = strdup("domfs");
+	dir->gid = strdup("domfs");
+	dir->muid = strdup("");
 	return 0;
 }
 
 void
 fsread(Req *r)
 {
-	Dnode *node;
-	node = r->fid->aux;
-	dirread9p(r, dirgen, node);
+	Finf *f;
+	f = r->fid->aux;
+	switch(f->type){
+	case ROOT:
+		dirread9p(r, dirgenroot, nil);
+		break;
+	case TREE:
+		dirread9p(r, dirgentree, f->aux);
+		break;
+	case NODE:
+	case CTRL:
+	case USER:
+	default:
+		sysfatal("fsread: unknown file type: %d", f->type);
+	}
+
+	//dirread9p(r, dirgen, nil);
 	respond(r, nil);
 }
 
 char*
 fsclone(Fid *oldfid, Fid *newfid)
 {
-	//fprint(2, "fsclone oldfid=%p newfid=%p\n", oldfid->aux, newfid->aux);
 	newfid->aux = oldfid->aux;
 	return nil;
 }
@@ -122,42 +216,65 @@ fsclone(Fid *oldfid, Fid *newfid)
 char*
 fswalk1(Fid *fid, char *name, Qid *qid)
 {
-	long id;
 	char *chp;
-	Dnode *node;
-	// TODO: check if name is one of control files
-	id = strtol(name, &chp, 10);
-	if (chp == name) return "not found";
-	node = getnode(id);
-	*qid = node->q;
+	uvlong id;
+	Finf *f, *nf;
+	f = fid->aux;
+	nf = nil;
+	switch (f->type){
+	case ROOT:
+		id = strtoull(name, &chp, 10);
+		// TODO: check if parsed correctly
+		nf = gettree(trees, id)->finf;
+		break;
+	case TREE:
+		id = strtoull(name, &chp, 10);
+		nf = getnode(f->aux, id)->finf;
+		break;
+	case NODE:
+	case CTRL:
+	case USER:
+	default:
+		sysfatal("fswalk1: unknown file type %d", f->type);
+	}
+	if (nf == nil) return "fswalk1: nf = nil";
+	*qid = nf->qid;
 	fid->qid = *qid;
-	fid->aux = getnode(id);
+	fid->aux = nf;
 	return nil;
 }
 
 void
 fsstat(Req *r)
 {
+	Finf *f;
+	f = r->fid->aux;
 	nulldir(&r->d);
 	r->d.type = L'M';
 	r->d.dev = 1;
 	r->d.length = 0;
-	r->d.muid = strdup("");
 	r->d.atime = time(0);
 	r->d.mtime = time(0);
 	r->d.uid = strdup("domfs");
 	r->d.gid = strdup("domfs");
-	switch(r->fid->qid.path){
-	case 0:
-		r->d.qid = (Qid){0, 0, QTDIR};
+	r->d.muid = strdup("");
+	r->d.qid = f->qid;
+	
+	switch (f->type) {
+	case ROOT:
 		r->d.name = strdup("/");
-		r->fid->aux = getnode(0);
+		r->d.mode = 0777|DMDIR;
 		break;
+	case TREE:
+		r->d.name = smprint("%ulld", ((DTree*)f->aux)->id);
+		r->d.mode = 0777|DMDIR;
+		break;
+	case NODE:
+	case CTRL:
+	case USER:
 	default:
-		r->d.qid = r->fid->qid;
-		r->d.name = smprint("%ulld", r->fid->qid.path);
-	};
-	r->d.mode = 0777|DMDIR;
+		sysfatal("fsstat: unknown file type %d", f->type);
+	}
 	respond(r, nil);
 }
 
@@ -189,12 +306,16 @@ main(int argc, char **argv)
 		usage();
 	} ARGEND
 	
-	stackinit(&nodes);
-	newnode(nodes.list[0]);
-	newnode(nodes.list[0]);
-	newnode(nodes.list[0]);
-	newnode(getnode(1));
+	rootf = newfinf(ROOT, &trees);
+	stackpush(&files, rootf);
 
+	stackpush(&trees, newtree());
+	stackpush(&trees, newtree());
+	stackpush(&trees, newtree());
+
+	stackpush(&(trees[0]->nodes), newnode(trees[0]));
+	stackpush(&(trees[0]->nodes), newnode(trees[0]));
+	
 	Srv fs = {
 		.attach = fsattach,
 		.read = fsread,

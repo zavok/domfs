@@ -1,0 +1,10 @@
+# Sketch of file tree:
+
+/tree/
+      new            ?
+/tree/node/
+           new       ?
+           children  ?
+           parent    ?
+/tree/node/child/    ?
+                 ...
