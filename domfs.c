@@ -15,6 +15,8 @@ enum { /* file types */
 	NODE,
 	CTRL,
 	USER,
+	NNEW,
+	TNEW,
 
 	REMV = -1,
 };
@@ -31,6 +33,7 @@ struct DTree {
 	Node **nodes;
 	uvlong nidcount;
 	Finf *finf;
+	Finf *fnew;
 };
 
 struct Node {
@@ -50,7 +53,7 @@ struct Fusr {
 	Finf *finf;
 };
 
-Finf **files, *rootf;
+Finf **files, *rootf, *fnew;
 
 DTree **trees;
 static uvlong tcount;
@@ -93,13 +96,15 @@ newfinf(int type, void *aux)
 {
 	static uvlong id = 0;
 	Finf *new;
-	new = malloc(sizeof(Finf));
+	new = mallocz(sizeof(Finf), 1);
 	switch (type) {
 	case ROOT:
 	case TREE:
 	case NODE:
 			new->qid = (Qid){id, 0, QTDIR};
 			break;
+	case NNEW:
+	case TNEW:
 	case CTRL:
 	case USER:
 			new->qid = (Qid){id, 0, QTFILE};
@@ -118,12 +123,16 @@ newtree(void)
 {
 	static uvlong id;
 	DTree *new;
-	new = malloc(sizeof(DTree));
-	new->nodes = nil;
+	new = mallocz(sizeof(DTree), 1);
+	// new->nodes = nil;
 	new->id = ++id;
-	new->nidcount = 0;
+	// new->nidcount = 0;
 	new->finf = newfinf(TREE, new);
 	stackpush(&files, new->finf);
+
+	new->fnew = newfinf(NNEW, new);
+	stackpush(&files, new->fnew);
+
 	return new;
 }
 
@@ -141,9 +150,9 @@ Node*
 newnode(DTree *T)
 {
 	Node *new;
-	new = malloc(sizeof(Node));
-	new->parent = nil;
-	new->children = nil;
+	new = mallocz(sizeof(Node), 1);
+	// new->parent = nil;
+	// new->children = nil;
 	new->id = ++T->nidcount;
 	new->finf = newfinf(NODE, new);
 	new->tree = T;
@@ -198,6 +207,20 @@ int
 dirgenroot(int n, Dir *dir, void*)
 {
 	DTree *t;
+	if (n == 0) {
+		nulldir(dir);
+		dir->qid = fnew->qid;
+		dir->mode = 0666;
+		dir->atime = time(0);
+		dir->mtime = time(0);
+		dir->length = 0;
+		dir->name = strdup("new");
+		dir->uid = strdup("domfs");
+		dir->gid = strdup("domfs");
+		dir->muid = strdup("");
+		return 0;
+	}
+	n--;
 	if (trees == nil) return -1;
 	t = trees[n];
 	if (t == nil) return -1;
@@ -221,6 +244,20 @@ dirgentree(int n, Dir *dir, void *aux)
 	Node *node;
 	tree = aux;
 	if (tree == nil) return -1;
+	if (n == 0) {
+		nulldir(dir);
+		dir->qid = tree->fnew->qid;
+		dir->mode = 0666;
+		dir->atime = time(0);
+		dir->mtime = time(0);
+		dir->length = 0;
+		dir->name = strdup("new");
+		dir->uid = strdup("domfs");
+		dir->gid = strdup("domfs");
+		dir->muid = strdup("");
+		return 0;
+	}
+	n--;
 	if (tree->nodes == nil) return -1;
 	node = tree->nodes[n];
 	if (node == nil) return -1;
@@ -264,6 +301,9 @@ void
 fsread(Req *r)
 {
 	Finf *f;
+	char *buf;
+	Node *node;
+	DTree *tree;
 	f = r->fid->aux;
 	switch(f->type){
 	case ROOT:
@@ -278,6 +318,25 @@ fsread(Req *r)
 	case CTRL:
 	case USER:
 		readbuf(r, ((Fusr*)f->aux)->data, ((Fusr*)f->aux)->nsize);
+		break;
+	case TNEW:
+		if (r->ifcall.offset == 0) {
+			tree  = newtree();
+			stackpush(&trees, tree);
+		} else tree = gettree(trees, stacksize(trees));
+		buf = smprint("%ulld\n", tree->id);
+		readstr(r, buf);
+		free(buf);
+		break;
+	case NNEW:
+		tree = f->aux;
+		if (r->ifcall.offset == 0) {
+			node  = newnode(tree);
+			stackpush(&(tree->nodes), node);
+		} else node = getnode(tree, stacksize(tree->nodes));
+		buf = smprint("%ulld\n", node->id);
+		readstr(r, buf);
+		free(buf);
 		break;
 	case REMV:
 		respond(r, "file does not exist");
@@ -362,6 +421,10 @@ fswalk1(Fid *fid, char *name, Qid *qid)
 	nf = nil;
 	switch (f->type){
 	case ROOT:
+		if (strcmp("new", name) == 0) {
+			nf = fnew;
+			break;
+		}
 		id = strtoull(name, &chp, 10);
 		// TODO: check if parsed correctly
 		p = gettree(trees, id);
@@ -371,6 +434,10 @@ fswalk1(Fid *fid, char *name, Qid *qid)
 	case TREE:
 		if (strcmp("..", name) == 0) {
 			nf = rootf;
+			break;
+		}
+		if (strcmp("new", name) == 0) {
+			nf = ((DTree*)f->aux)->fnew;
 			break;
 		}
 		id = strtoull(name, &chp, 10);
@@ -388,6 +455,8 @@ fswalk1(Fid *fid, char *name, Qid *qid)
 		if (p == nil) return "file does not exist";
 		nf = ((Fusr*)p)->finf;
 		break;
+	case NNEW:
+	case TNEW:
 	case CTRL:
 	case USER:
 	case REMV:
@@ -441,7 +510,15 @@ fsstat(Req *r)
 		r->d.name = strdup(((Fusr*)f->aux)->name);
 		r->d.mode = -1;
 		break;
+	case TNEW:
+		r->d.name = strdup("new");
+		r->d.mode = 0666;
+		break;
+		break;
 	case CTRL:
+		r->d.name = strdup("new");
+		r->d.mode = 0666;
+		break;
 	default:
 		sysfatal("fsstat: unknown file type %d", f->type);
 	}
@@ -454,8 +531,8 @@ fsdestroyfid(Fid *fid)
 {
 	/*
 	 * TODO: this whole func is probably not correct;
-	 * 9p(2) man page description of remove func recommends tracking fids that
-	 * access file to be deleted, but I am not sure how to do it
+	 * 9p(2) manpage's description of remove func recommends tracking fids that
+	 * access file to be deleted, but I am not sure how to do it properly.
 	 */
 
 	Finf *f;
@@ -503,14 +580,12 @@ main(int argc, char **argv)
 	
 	rootf = newfinf(ROOT, &trees);
 	stackpush(&files, rootf);
+	fnew = newfinf(TNEW, &rootf);
+	stackpush(&files, fnew);
 
 	stackpush(&trees, newtree());
-	stackpush(&trees, newtree());
-	stackpush(&trees, newtree());
-
-	stackpush(&(trees[0]->nodes), newnode(trees[0]));
-	stackpush(&(trees[0]->nodes), newnode(trees[0]));
-	
+	//stackpush(&trees, newtree());
+	//stackpush(&trees, newtree());
 	
 	Srv fs = {
 		.attach = fsattach,
