@@ -13,7 +13,7 @@ enum { /* file types */
 	ROOT,
 	TREE,
 	NODE,
-	CTRL,
+	NCTL,
 	USER,
 	NNEW,
 	TNEW,
@@ -43,6 +43,7 @@ struct Node {
 	Node **children;
 	Fusr **files;
 	Finf *finf;
+	Finf *fctl;
 };
 
 struct Fusr {
@@ -105,8 +106,9 @@ newfinf(int type, void *aux)
 			break;
 	case NNEW:
 	case TNEW:
-	case CTRL:
+	case NCTL:
 	case USER:
+	case REMV:
 			new->qid = (Qid){id, 0, QTFILE};
 			break;
 	default:
@@ -124,9 +126,7 @@ newtree(void)
 	static uvlong id;
 	DTree *new;
 	new = mallocz(sizeof(DTree), 1);
-	// new->nodes = nil;
 	new->id = ++id;
-	// new->nidcount = 0;
 	new->finf = newfinf(TREE, new);
 	stackpush(&files, new->finf);
 
@@ -151,12 +151,12 @@ newnode(DTree *T)
 {
 	Node *new;
 	new = mallocz(sizeof(Node), 1);
-	// new->parent = nil;
-	// new->children = nil;
 	new->id = ++T->nidcount;
 	new->finf = newfinf(NODE, new);
 	new->tree = T;
 	stackpush(&files, new->finf);
+	new->fctl = newfinf(NCTL, new);
+	stackpush(&files, new->fctl);
 	return new;
 }
 
@@ -174,11 +174,8 @@ Fusr*
 newfile(char *name)
 {
 	Fusr *new;
-	new = malloc(sizeof(Fusr));
-	new->node = nil;
+	new = mallocz(sizeof(Fusr), 1);
 	new->name = strdup(name);
-	new->data = nil;
-	new->nsize = 0;
 	new->finf = newfinf(USER, new);
 	stackpush(&files, new->finf);
 	return new;
@@ -281,6 +278,22 @@ dirgennode(int n, Dir *dir, void *aux)
 	Fusr *file;
 	node = aux;
 	if (node == nil) return -1;
+
+	if (n == 0) {
+		nulldir(dir);
+		dir->qid = node->fctl->qid;
+		dir->mode = 0666;
+		dir->atime = time(0);
+		dir->mtime = time(0);
+		dir->length = 0;
+		dir->name = strdup("ctl");
+		dir->uid = strdup("domfs");
+		dir->gid = strdup("domfs");
+		dir->muid = strdup("");
+		return 0;
+	}
+	n--;
+
 	if (node->files == nil) return -1;
 	file = node->files[n];
 	if (file == nil) return -1;
@@ -295,6 +308,68 @@ dirgennode(int n, Dir *dir, void *aux)
 	dir->gid = strdup("domfs");
 	dir->muid = strdup("");
 	return 0;
+}
+
+char *
+nctl2str(Finf *f)
+{
+	char *str;
+	Node *node, **cp;
+	uvlong parid;
+	long len, n;
+	if (f == nil) sysfatal("nctl2str: f == nil"); //return nil;
+	if (f->type != NCTL) sysfatal("nctl2str: f->type != NCTL"); //return nil;
+	node = f->aux;
+	if (node == nil) sysfatal("nctl2str: node == nil"); //return nil;
+	parid = (node->parent != nil) ? node->parent->id : 0;
+
+	str = smprint("parent %ulld\nchildren\n", parid);
+	len = strlen(str);
+	
+	if (node->children == nil) return str;
+	for (cp = node->children; *cp != nil; cp++) {
+		char *buf;
+		str[len - 1] = ' ';
+		buf = smprint("%ulld\n", (*cp)->id);
+		n = strlen(buf);
+		str = realloc(str, len + n + 1);
+		memmove(str + len, buf, n);
+		str[len + n] = 0;
+		free(buf);
+		len += n;
+	}
+	return str;
+}
+
+char *
+nctlparse(Finf *f, char *cmd)
+{
+	Node *node;
+	DTree *tree;
+	int argc;
+	char **argv;
+	if (f->type != NCTL) sysfatal("nctlparse: f->type != NCTL");
+	node = f->aux;
+	tree = node->tree;
+	argv = malloc(sizeof(char*) * 256);
+	argc = tokenize(cmd, argv, 256);
+	if (argc == 0) return nil;
+	if (strcmp(argv[0], "adopt") == 0) {
+		char *cpt;
+		Node *child;
+		uvlong id;
+		if (argc == 1) return "not enough args";
+		id = strtoull(argv[1], &cpt, 10);
+		// TODO: check if parsed correctly
+		child = getnode(tree, id);
+		if (child == nil) return "no such node";
+		if (child == node) return "can't adopt self";
+		if (child->parent != nil) stackremv(&child->parent->children, child);
+		stackpush(&(node->children), child);
+		child->parent = node;
+		return nil;
+	}
+	return "unknown cmd";
 }
 
 void
@@ -315,9 +390,15 @@ fsread(Req *r)
 	case NODE:
 		dirread9p(r, dirgennode, f->aux);
 		break;
-	case CTRL:
 	case USER:
 		readbuf(r, ((Fusr*)f->aux)->data, ((Fusr*)f->aux)->nsize);
+		break;
+	case NCTL:
+		// TODO: first line - parent, sec line - children
+		buf = nctl2str(f);
+		if (buf == nil) break;
+		readstr(r, buf);
+		free(buf);
 		break;
 	case TNEW:
 		if (r->ifcall.offset == 0) {
@@ -351,21 +432,31 @@ fsread(Req *r)
 void
 fswrite(Req *r)
 {
+	char *buf, *rstr;
 	Finf *file;
 	Fusr *f;
 	file = r->fid->aux;
 	switch (file->type) {
 	case USER:
+		// TODO: finish this section
 		f = file->aux;
 		f->nsize = r->ifcall.count;
 		f->data = realloc(f->data, f->nsize);
 		memmove(f->data, r->ifcall.data, f->nsize);
 		r->ofcall.count = f->nsize;
-		respond(r, nil);
+		rstr = nil;
+		break;
+	case NCTL:
+		buf = mallocz(r->ifcall.count + 1, 1);
+		memmove(buf, r->ifcall.data, r->ifcall.count);
+		rstr = nctlparse(file, buf);
+		free(buf);
+		r->ofcall.count = r->ifcall.count;
 		break;
 	default:
-		respond(r, "permission denied");
+		rstr = "permission denied";
 	}
+	respond(r, rstr);
 }
 
 void
@@ -451,13 +542,17 @@ fswalk1(Fid *fid, char *name, Qid *qid)
 			nf = ((Node*)f->aux)->tree->finf;
 			break;
 		}
+		if (strcmp("ctl", name) == 0) {
+			nf = ((Node*)f->aux)->fctl;
+			break;
+		}
 		p = getfile(f->aux, name);
 		if (p == nil) return "file does not exist";
 		nf = ((Fusr*)p)->finf;
 		break;
 	case NNEW:
 	case TNEW:
-	case CTRL:
+	case NCTL:
 	case USER:
 	case REMV:
 		return "walk on file, what?";
@@ -510,12 +605,15 @@ fsstat(Req *r)
 		r->d.name = strdup(((Fusr*)f->aux)->name);
 		r->d.mode = -1;
 		break;
+	case NCTL:
+		r->d.name = strdup("ctl");
+		r->d.mode = 0666;
+		break;
 	case TNEW:
 		r->d.name = strdup("new");
 		r->d.mode = 0666;
 		break;
-		break;
-	case CTRL:
+	case NNEW:
 		r->d.name = strdup("new");
 		r->d.mode = 0666;
 		break;
