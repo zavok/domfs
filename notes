@@ -1,10 +1,9 @@
 # Sketch of file tree:
 
 /tree/
-      new            ?
+     /new
 /tree/node/
-           new       ?
-           children  ?
-           parent    ?
+          /new
+          /ctl
 /tree/node/child/    ?
-                 ...
+                /... ?

@@ -1,9 +1,12 @@
 </$objtype/mkfile
 
-TARG=domfs
+TARG=\
+	domfs\
+	html2dom\
 
 OFILES=\
-	domfs.$O\
+#	domfs.$O\
+#	html2dom.$O\
 
 BIN=/$objtype/bin
-</sys/src/cmd/mkone
+</sys/src/cmd/mkmany
