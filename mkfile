@@ -2,11 +2,13 @@
 
 TARG=\
 	domfs\
-	html2dom\
+	html5dom\
 
-OFILES=\
-#	domfs.$O\
-#	html2dom.$O\
+HFILES=\
+	html5dom.h\
+	ncref.h\
 
 BIN=/$objtype/bin
 </sys/src/cmd/mkmany
+
+$O.html5dom: tok.$O tree.$O

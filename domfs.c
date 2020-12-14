@@ -433,6 +433,7 @@ void
 fswrite(Req *r)
 {
 	char *buf, *rstr;
+	long off, nsize;
 	Finf *file;
 	Fusr *f;
 	file = r->fid->aux;
@@ -440,10 +441,13 @@ fswrite(Req *r)
 	case USER:
 		// TODO: finish this section
 		f = file->aux;
-		f->nsize = r->ifcall.count;
+		off = r->ifcall.offset;
+		if (r->d.mode & DMAPPEND) off = f->nsize;
+		nsize = off + r->ifcall.count;
+		if (nsize > f->nsize) f->nsize = nsize;
 		f->data = realloc(f->data, f->nsize);
-		memmove(f->data, r->ifcall.data, f->nsize);
-		r->ofcall.count = f->nsize;
+		memmove(f->data + off, r->ifcall.data, r->ifcall.count);
+		r->ofcall.count = r->ifcall.count;
 		rstr = nil;
 		break;
 	case NCTL:
@@ -651,7 +655,7 @@ fsdestroyfid(Fid *fid)
 void
 usage(void)
 {
-	fprint(2, "usage %s [-D][-m /n/dom][-s service]\n", argv0);
+	fprint(2, "usage %s [-D][-m /mnt/dom][-s service]\n", argv0);
 	exits("usage");
 }
 
@@ -660,7 +664,7 @@ main(int argc, char **argv)
 {
 	char *srv, *mtpt;
 	srv = nil;
-	mtpt = "/n/dom";
+	mtpt = "/mnt/dom";
 
 	ARGBEGIN {
 	case 'm':
@@ -682,8 +686,6 @@ main(int argc, char **argv)
 	stackpush(&files, fnew);
 
 	stackpush(&trees, newtree());
-	//stackpush(&trees, newtree());
-	//stackpush(&trees, newtree());
 	
 	Srv fs = {
 		.attach = fsattach,

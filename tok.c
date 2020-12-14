@@ -3,45 +3,17 @@
 #include <String.h>
 #include <thread.h>
 
-#define ALPHA(x) ((x >=0x41) && (x <= 0x7a))
+#include "html5dom.h"
+#include "ncref.h"
 
-static char *drpath = "/n/dom";
-static char *tpath = nil;
+#define ALPHA(x) ((x >=0x41) && (x <= 0x7a))
+#define DIGIT(x) ((x >=0x30) && (x <= 0x39))
+
+Channel *outchannel;
 
 int gc(void);
 
-/* Tokens code */
 
-typedef struct Attr Attr;
-
-struct Attr{
-	String *name;
-	String *value;
-};
-
-enum { /* Token types */
-	TDOCT,
-	TSTART,
-	TEND,
-	TCOMM,
-	TCHAR,
-	TTAG,
-	TEOF = -1,
-};
-
-typedef struct Token Token;
-struct Token {
-	int type;
-	Rune c;
-	String *name;
-	Attr **attr;
-};
-
-Token* chartok(Rune);
-Token* eoftok(void);
-void t_free(Token*);
-Attr* tnewattr(Token*);
-void attr_free(Attr*);
 
 Token*
 eoftok(void)
@@ -62,6 +34,17 @@ chartok(Rune c)
 	return t;
 }
 
+Token*
+newtok(int type)
+{
+	Token *nt;
+	nt = mallocz(sizeof(Token), 1);
+	nt->type = type;
+	nt->name = s_new();
+	nt->attr = nil;
+	return nt;
+}
+
 void
 t_free(Token *t)
 {
@@ -77,11 +60,11 @@ tnewattr(Token *t)
 	if (t->attr == nil) t->attr = mallocz(sizeof(Attr*), 1);
 	for (n=0; (t->attr)[n] != nil; n++);
 	t->attr = realloc(t->attr, (n + 1) * sizeof(Attr*));
-	t->attr[n] = mallocz(sizeof(Attr), 1);
-	t->attr[n]->name = s_new();
-	t->attr[n]->value = s_new();
-	t->attr[n+1] = nil;
-	return t->attr[n];
+	t->attr[n-1] = mallocz(sizeof(Attr), 1);
+	t->attr[n-1]->name = s_new();
+	t->attr[n-1]->value = s_new();
+	t->attr[n] = nil;
+	return t->attr[n-1];
 }
 
 void
@@ -91,37 +74,6 @@ attr_free(Attr *attr)
 	s_free(attr->value);
 	free(attr);
 }
-
-/*
- * Insertion modes, as defined in
- * https://html.spec.whatwg.org/#the-insertion-mode
- */
-
-enum {
-	IMinitial = 0,
-	IMbefore_html = 1,
-	IMbefore_head = 1 << 1,
-	IMin_head = 1 << 2,
-	IMin_head_noscript = 1 << 3,
-	IMafter_head = 1 << 4,
-	IMin_body = 1 << 5,
-	IMtext = 1 << 6,
-	IMin_table = 1 << 7,
-	IMin_table_text = 1 << 8,
-	IMin_caption = 1 << 9,
-	IMin_column_group = 1 << 10,
-	IMin_table_body = 1 << 11,
-	IMin_row = 1 << 12,
-	IMin_cell = 1 << 13,
-	IMin_select = 1 << 14,
-	IMin_select_in_table = 1 << 15,
-	IMin_template = 1 << 16,
-	IMafter_body = 1 << 17,
-	IMin_frameset = 1 << 18,
-	IMafter_frameset = 1 << 19,
-	IMafter_after_body = 1 << 20,
-	IMafter_after_frameset = 1 << 21,
-};
 
 u32int insertion_mode = IMinitial;
 
@@ -134,10 +86,11 @@ int teof;
 Token *ctoken;
 Attr *cattr;
 String *ctempbuf;
+String *clookaheadbuf;
 
 void tconsume(void);
 void temit(Token*);
-void temitbuf(void);
+void temitbuf(String*);
 int talpha(int);
 
 void tsdata(void);
@@ -191,9 +144,9 @@ void tscommentless(void);
 void tscommentlessbang(void);
 void tscommentlessbangdash(void);
 void tscommentlessbangddash(void);
-void tscommentebddash(void);
-void tscommentebd(void);
-void tscommentebdbang(void);
+void tscommentenddash(void);
+void tscommentend(void);
+void tscommentendbang(void);
 void tsdoct(void);
 void tsdoctbefore(void);
 void tsdoctname(void);
@@ -206,8 +159,8 @@ void tsdoctpubidafter(void);
 void tsdoctbetween(void);
 void tsdoctsyskafter(void);
 void tsdoctsysidbefore(void);
-void tsdoctsysiddQ(void);
-void tsdoctsysidSQ(void);
+void tsdoctsysiddq(void);
+void tsdoctsysidsq(void);
 void tsdoctsysidafter(void);
 void tsdoctbogus(void);
 void tscdat(void);
@@ -352,57 +305,57 @@ void (*tstab[])(void) = {
 
 	[TSANAME_BEFORE] = tsanamebefore,
 	[TSANAME]        = tsaname,
-	[TSANAME_AFTER] = nil,
-	[TSAVAL_BEFORE] = nil,
-	[TSAVAL_DQ] = nil,
-	[TSAVAL_SQ] = nil,
-	[TSAVAL_UQ] = nil,
-	[TSAVAL_AFTER] = nil,
-	[TSSCSTAG] = nil,
-	[TSBOGUS_COMMENT] = nil,
-	[TSMKUP_OPEN] = nil,
-	[TSCOMMENT_START] = nil,
-	[TSCOMMENT_START_DASH] = nil,
-	[TSCOMMENT] = nil,
-	[TSCOMMENT_LESS] = nil,
-	[TSCOMMENT_LESS_BANG] = nil,
-	[TSCOMMENT_LESS_BANG_DASH] = nil,
-	[TSCOMMENT_LESS_BANG_DDASH] = nil,
-	[TSCOMMENT_END_DASH] = nil,
-	[TSCOMMENT_END] = nil,
-	[TSCOMMENT_END_BANG] = nil,
-	[TSDOCT] = nil,
-	[TSDOCT_BEFORE] = nil,
-	[TSDOCT_NAME] = nil,
-	[TSDOCT_NAME_AFTER] = nil,
-	[TSDOCT_PUBK_AFTER] = nil,
-	[TSDOCT_PUBID_BEFORE] = nil,
-	[TSDOCT_PUBID_DQ] = nil,
-	[TSDOCT_PUBID_SQ] = nil,
-	[TSDOCT_PUBID_AFTER] = nil,
-	[TSDOCT_BETWEEN] = nil,
-	[TSDOCT_SYSK_AFTER] = nil,
-	[TSDOCT_SYSID_BEFORE] = nil,
-	[TSDOCT_SYSID_DQ] = nil,
-	[TSDOCT_SYSID_SQ] = nil,
-	[TSDOCT_SYSID_AFTER] = nil,
-	[TSDOCT_BOGUS] = nil,
-	[TSCDAT] = nil,
-	[TSCDAT_BRK] = nil,
-	[TSCDAT_END] = nil,
-	[TSCREF] = nil,
-	[TSNCREF] = nil,
-	[TSAMAM] = nil,
-	[TSNUMREF] = nil,
-	[TSHEXREF_START] = nil,
-	[TSDECREF_START] = nil,
-	[TSHEXREF] = nil,
-	[TSDECREF] = nil,
-	[TSNUMREF_END] = nil,
+	[TSANAME_AFTER] = tsanameafter,
+	[TSAVAL_BEFORE] = tsavalbefore,
+	[TSAVAL_DQ] = tsavaldq,
+	[TSAVAL_SQ] = tsavalsq,
+	[TSAVAL_UQ] = tsavaluq,
+	[TSAVAL_AFTER] = tsavalafter,
+	[TSSCSTAG] = tsscstag,
+	[TSBOGUS_COMMENT] = tsboguscomment,
+	[TSMKUP_OPEN] = tsmkupopen,
+	[TSCOMMENT_START] = tscommentstart,
+	[TSCOMMENT_START_DASH] = tscommentstartdash,
+	[TSCOMMENT] = tscomment,
+	[TSCOMMENT_LESS] = tscommentless,
+	[TSCOMMENT_LESS_BANG] = tscommentlessbang,
+	[TSCOMMENT_LESS_BANG_DASH] = tscommentlessbangdash,
+	[TSCOMMENT_LESS_BANG_DDASH] = tscommentlessbangddash,
+	[TSCOMMENT_END_DASH] = tscommentenddash,
+	[TSCOMMENT_END] = tscommentend,
+	[TSCOMMENT_END_BANG] = tscommentendbang,
+	[TSDOCT] = tsdoct,
+	[TSDOCT_BEFORE] = tsdoctbefore,
+	[TSDOCT_NAME] = tsdoctname,
+	[TSDOCT_NAME_AFTER] = tsdoctnameafter,
+	[TSDOCT_PUBK_AFTER] = tsdoctpubkafter,
+	[TSDOCT_PUBID_BEFORE] = tsdoctpubidbefore,
+	[TSDOCT_PUBID_DQ] = tsdoctpubiddq,
+	[TSDOCT_PUBID_SQ] = tsdoctpubidsq,
+	[TSDOCT_PUBID_AFTER] = tsdoctpubidafter,
+	[TSDOCT_BETWEEN] = tsdoctbetween,
+	[TSDOCT_SYSK_AFTER] = tsdoctsyskafter,
+	[TSDOCT_SYSID_BEFORE] = tsdoctsysidbefore,
+	[TSDOCT_SYSID_DQ] = tsdoctsysiddq,
+	[TSDOCT_SYSID_SQ] = tsdoctsysidsq,
+	[TSDOCT_SYSID_AFTER] = tsdoctsysidafter,
+	[TSDOCT_BOGUS] = tsdoctbogus,
+	[TSCDAT] = tscdat,
+	[TSCDAT_BRK] = tscdatbrk,
+	[TSCDAT_END] = tscdatend,
+	[TSCREF] = tscref,
+	[TSNCREF] = tsncref,
+	[TSAMAM] = tsamam,
+	[TSNUMREF] = tsnumref,
+	[TSHEXREF_START] = tshexrefstart,
+	[TSDECREF_START] = tsdecrefstart,
+	[TSHEXREF] = tshexref,
+	[TSDECREF] = tsdecref,
+	[TSNUMREF_END] = tsnumrefend,
 };
 
 int tstate = TSDATA;
-int trstate = -1;
+int treturn = -1;
 
 void
 tsanamebefore(void)
@@ -420,9 +373,9 @@ tsanamebefore(void)
 		tstate = TSANAME_AFTER;
 		break;
 	case '=':
-		fprint(2, "unexpected equals sign before attribute name parse error\n");
+		fprint(2, "unexpected equals sign before attribute name parse error, tc='%c'\n", tc);
 		cattr = tnewattr(ctoken);
-		s_nappend(cattr->name, (char*)(&tc), 4);
+		s_putc(cattr->name, tc);
 		tstate = TSANAME;
 		break;
 	default:
@@ -435,8 +388,6 @@ tsanamebefore(void)
 void
 tsaname(void)
 {
-	char buf[UTFmax];
-	int n, err;
 	if (ALPHA(tc) != 0) {
 		if (tc < 'a') tc += 0x20;
 	}
@@ -449,259 +400,625 @@ tsaname(void)
 	case '>':
 	case -1:
 		treconsume = 1;
+		s_terminate(cattr->name);
 		tstate = TSANAME_AFTER;
 		break;
 	case '=':
 		tstate = TSAVAL_BEFORE;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
-		err = REPCHAR;
-		s_nappend(cattr->name, (char *)(&err), 2);
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
+		s_putc(cattr->name, REPCHAR);
 		break;
 	case '"':
 	case '\'':
 	case '<':
-		fprint(2, "unexpected character in attribute name parse error\n");
+		fprint(2, "unexpected character in attribute name parse error, tc='%c'\n", tc);
 	default:
-		n = runetochar(buf, &tc);
-		s_nappend(cattr->name, buf, n);
+		s_putc(cattr->name, tc);
 	}
+	/* TODO check for duplicate attribute names on leaving or emitting */
 }
 
 void
 tsanameafter(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		break;
+	case '/':
+		tstate = TSSCSTAG;
+		break;
+	case '=':
+		tstate = TSAVAL_BEFORE;
+		break;
+	case '>':
+		tstate = TSDATA;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		break;
+	case -1: /* EOF */
+		fprint(2, "eof in tag parse error\n");
+		temit(eoftok());
+		break;
+	default:
+		cattr = tnewattr(ctoken);
+		treconsume = 1;
+		tstate = TSANAME;
+	}
 }
 
 void
 tsavalbefore(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		break;
+	case '"':
+		tstate = TSAVAL_DQ;
+		break;
+	case '\'':
+		tstate = TSAVAL_SQ;
+		break;
+	case '>':
+		fprint(2, "missing attribute value parse error\n");
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		tstate = TSDATA;
+		break;
+	default:
+		treconsume = 1;
+		tstate = TSAVAL_UQ;
+	}
 }
 
 void
 tsavaldq(void)
 {
+	switch (tc) {
+	case '"':
+		tstate = TSAVAL_AFTER;
+		break;
+	case '&':
+		treturn = TSAVAL_DQ;
+		tstate = TSCREF;
+		break;
+	case '\0':
+		fprint(2, "unexpected null character parse error\n");
+		s_putc(cattr->value, REPCHAR);
+		break;
+	case -1: /* EOF */
+		fprint(2, "oef in tag parse error\n");
+		temit(eoftok());
+		break;
+	default:
+		s_putc(cattr->value, tc);
+	}		
 }
 
 void
 tsavalsq(void)
 {
+	switch (tc) {
+	case '\'':
+		tstate = TSAVAL_AFTER;
+		break;
+	case '&':
+		treturn = TSAVAL_SQ;
+		tstate = TSCREF;
+		break;
+	case '\0':
+		fprint(2, "unexpected null character parse error\n");
+		s_putc(cattr->value, REPCHAR);
+		break;
+	case -1: /* EOF */
+		fprint(2, "oef in tag parse error\n");
+		temit(eoftok());
+		break;
+	default:
+		s_putc(cattr->value, tc);
+	}
 }
 
 void
 tsavaluq(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		s_terminate(cattr->value);
+		tstate = TSANAME_BEFORE;
+		break;
+	case '&':
+		treturn = TSAVAL_UQ;
+		tstate = TSCREF;
+		break;
+	case '>':
+		s_terminate(ctoken->name);
+		s_terminate(cattr->value);
+		tstate = TSDATA;
+		break;
+	case '\0':
+		fprint(2, "unexpected null character parse error\n");
+		s_putc(cattr->value, REPCHAR);
+		break;
+	case -1: /* EOF */
+		fprint(2, "oef in tag parse error\n");
+		temit(eoftok());
+		break;	case '"':
+	case '\'':
+	case '<':
+	case '=':
+	case '`':
+		fprint(2, "unexpected character in unquoted attribute value parse error\n");
+	default:
+		s_putc(cattr->value, tc);
+	}
 }
 
 void
 tsavalafter(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		tstate = TSANAME_BEFORE;
+		break;
+	case '/':
+		ctoken->flags |=  TSSCSTAG;
+		break;
+	case '>':
+		s_terminate(ctoken->name);
+		s_terminate(cattr->value);
+		temit(ctoken);
+		tstate = TSDATA;
+		break;
+	case -1: /* EOF */
+		fprint(2, "eof in tag parse error\n");
+		temit(eoftok());
+		break;
+	default:
+		fprint(2, "missing whitespace between attributes parse error\n");
+		treconsume = 1;
+		tstate = TSANAME_BEFORE;
+	}
 }
 
 void
 tsscstag(void)
 {
+	switch (tc) {
+	case '>':
+		ctoken->flags |= TF_SELF_CLOSING;
+		tstate = TSDATA;
+		temit(ctoken);
+		break;
+	case -1:
+		fprint(2, "eof in tag parse error\n");
+		temit(eoftok());
+		break;
+	default:
+		fprint(2, "unxpected solidus in tag parse error\n");
+		treconsume = 1;
+		tstate = TSANAME_BEFORE;
+	}
 }
 
 void
 tsboguscomment(void)
 {
+	fprint(2, "tsboguscomment not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsmkupopen(void)
 {
+	int i;
+	String *mbuf, *lowered;
+	mbuf = s_new();
+	s_putc(mbuf, tc);
+	tconsume();
+	s_putc(mbuf, tc);
+	if (strncmp(s_to_c(mbuf), "--", 2) == 0) {
+		ctoken = newtok(TCOMM);
+		tstate = TSCOMMENT_START;
+		s_free(mbuf);
+		return;
+	}
+	for (i = 0; i < 5; i++) {
+		tconsume();
+		s_putc(mbuf, tc);
+	}
+	if (strncmp(s_to_c(mbuf), "[CDATA[", 7) == 0) {
+		/* TODO: check if adjusted current node */
+		tstate = TSCDAT;
+		s_free(mbuf);
+		return;
+	}
+	lowered = s_copy(s_to_c(mbuf));
+	s_tolower(lowered);
+	if (strncmp(s_to_c(lowered), "doctype", 7) == 0) {
+		tstate = TSDOCT;
+		s_free(mbuf);
+		s_free(lowered);
+		return;
+	}
+	fprint(2, "incorrectly opened comment parse error, tc='%c'\n", tc);
+	ctoken = newtok(TCOMM);
+	tstate = TSBOGUS_COMMENT;
+	s_append(clookaheadbuf, s_to_c(mbuf));
+	s_free(lowered);
+	s_free(mbuf);
 }
 
 void
 tscommentstart(void)
 {
+	fprint(2, "tscommentstart not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscommentstartdash(void)
 {
+	fprint(2, "tscommentstartdash not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscomment(void)
 {
+	fprint(2, "tscomment not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscommentless(void)
 {
+	fprint(2, "tscommentless not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscommentlessbang(void)
 {
+	fprint(2, "tscommentlessbang not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscommentlessbangdash(void)
 {
+	fprint(2, "tscommentlessbangdash not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscommentlessbangddash(void)
 {
+	fprint(2, "tscommentlessbangddash not implemented\n");
+	tstate = TSDATA;
 }
 
 void
-tscommentebddash(void)
+tscommentenddash(void)
 {
+	fprint(2, "tscommentenddash not implemented\n");
+	tstate = TSDATA;
 }
 
 void
-tscommentebd(void)
+tscommentend(void)
 {
+	fprint(2, "tscommentend not implemented\n");
+	tstate = TSDATA;
 }
 
 void
-tscommentebdbang(void)
+tscommentendbang(void)
 {
+	fprint(2, "tscommentendbang not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoct(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		tstate = TSDOCT_BEFORE;
+		break;
+	case '>':
+		treconsume = 1;
+		tstate = TSDOCT_BEFORE;
+		break;
+	case -1: /* eof */
+		fprint(2, "eof in doctype parse error, tc='%c'\n", tc);
+		ctoken = newtok(TDOCT);
+		ctoken->flags |= TF_FORCE_QUIRKS;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		break;
+	default:
+		fprint(2, "missing whitespace before doctype name parse error, tc='%c'\n", tc);
+		treconsume = 1;
+		tstate = TSDOCT_BEFORE;
+	}
 }
 
 void
 tsdoctbefore(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		break;
+	case '\0':
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
+		ctoken = newtok(TDOCT);
+		s_putc(ctoken->name, REPCHAR);
+		tstate = TSDOCT_NAME;
+		break;
+	case '>':
+		fprint(2, "missing doctype name parse error, tc='%c'\n", tc);
+		ctoken = newtok(TDOCT);
+		ctoken->flags |= TF_FORCE_QUIRKS;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		break;
+	case -1: /* EOF */
+		fprint(2, "eof in doctype parse error, tc='%c'\n", tc);
+		ctoken = newtok(TDOCT);
+		ctoken->flags |= TF_FORCE_QUIRKS;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		temit(eoftok());
+		break;
+	default:
+		if (tc < 'a') tc += 0x20;
+		ctoken = newtok(TDOCT);
+		s_putc(ctoken->name, tc);
+		tstate = TSDOCT_NAME;
+	}
 }
 
 void
 tsdoctname(void)
 {
+	switch (tc) {
+	case '\t':
+	case '\n':
+	case '\r':
+	case ' ':
+		tstate = TSDOCT_NAME_AFTER;
+		break;
+	case '>':
+		tstate = TSDATA;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		break;
+	case '\0':
+		fprint(2, "unexpected null character parse error\n");
+		s_putc(ctoken->name, REPCHAR);
+		break;
+	case -1: /* EOF */
+		fprint(2, "eof in doctype parse error\n");
+		ctoken->flags |= TF_FORCE_QUIRKS;
+		s_terminate(ctoken->name);
+		temit(ctoken);
+		temit(eoftok());
+		break;
+	default:
+		talpha(1);
+	}
 }
 
 void
 tsdoctnameafter(void)
 {
+	fprint(2, "tsdoctnameafter not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctpubkafter(void)
 {
+	fprint(2, "tsdoctpubkafter not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctpubidbefore(void)
 {
+	fprint(2, "tsdoctpubidbefore not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctpubiddq(void)
 {
+	fprint(2, "tsdoctpubiddq not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctpubidsq(void)
 {
+	fprint(2, "tsdoctpubidsq not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctpubidafter(void)
 {
+	fprint(2, "tsdoctpubidafter not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctbetween(void)
 {
+	fprint(2, "tsdoctbetween not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctsyskafter(void)
 {
+	fprint(2, "tsdoctsyskafter not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctsysidbefore(void)
 {
+	fprint(2, "tsdoctsysidbefore not implemented\n");
+	tstate = TSDATA;
 }
 
 void
-tsdoctsysiddQ(void)
+tsdoctsysiddq(void)
 {
+	fprint(2, "tsdoctsysiddq not implemented\n");
+	tstate = TSDATA;
 }
 
 void
-tsdoctsysidSQ(void)
+tsdoctsysidsq(void)
 {
+	fprint(2, "tsdoctsysidsq not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctsysidafter(void)
 {
+	fprint(2, "tsdoctsysidafter not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdoctbogus(void)
 {
+	fprint(2, "tsdoctbogus not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscdat(void)
 {
+	fprint(2, "tscdat not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscdatbrk(void)
 {
+	fprint(2, "tscdatbrk not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscdatend(void)
 {
+	fprint(2, "tscdatend not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tscref(void)
 {
+	if ((ALPHA(tc)) || (DIGIT(tc))) {
+		treconsume = 1;
+		tstate = TSNCREF;
+		return;
+	}
+	switch (tc) {
+	case '#':
+		s_putc(ctempbuf, tc);
+		tstate = TSNUMREF;
+		break;
+	default:
+		treconsume = 1;
+		s_terminate(ctempbuf);
+		s_append(cattr->value, s_to_c(ctempbuf));
+		s_reset(ctempbuf);
+		tstate = treturn;	
+	}
+	fprint(2, "tscref not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsncref(void)
 {
+	fprint(2, "tsncref not implemented\n");
+	tstate = treturn;
 }
 
 void
 tsamam(void)
 {
+	fprint(2, "tsamam not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsnumref(void)
 {
+	fprint(2, "tsnumref not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tshexrefstart(void)
 {
+	fprint(2, "tshexrefstart not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdecrefstart(void)
 {
+	fprint(2, "tsdecrefstart not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tshexref(void)
 {
+	fprint(2, "tshexref not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsdecref(void)
 {
+	fprint(2, "tsdecref not implemented\n");
+	tstate = TSDATA;
 }
 
 void
 tsnumrefend(void)
 {
+	fprint(2, "tsnumrefend not implemented\n");
+	tstate = TSDATA;
 }
 
 void
@@ -726,7 +1043,7 @@ tsscriptendname(void)
 	} else {
 		temit(chartok('<'));
 		temit(chartok('/'));
-		temitbuf();
+		temitbuf(ctempbuf);
 	}
 }
 
@@ -769,11 +1086,11 @@ tsscriptesc(void)
 		tstate = TSSCRIPT_ESC_LESS;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(REPCHAR));
 		break;
 	case -1: /* EOF */
-		fprint(2, "eof in scipt html comment like text parse error\n");
+		fprint(2, "eof in scipt html comment like text parse error, tc='%c'\n", tc);
 		temit(eoftok());
 	default:
 		temit(chartok(tc));
@@ -793,12 +1110,12 @@ tsscriptescdash(void)
 		tstate = TSSCRIPT_ESC_LESS;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		tstate = TSSCRIPT_ESC;
 		temit(chartok(REPCHAR));
 		break;
 	case -1:
-		fprint(2, "eof in script html comment like text parse error\n");
+		fprint(2, "eof in script html comment like text parse error, tc='%c'\n", tc);
 		temit(eoftok());
 		break;
 	default:
@@ -811,61 +1128,80 @@ tsscriptescdash(void)
 void
 tsscriptescddash(void)
 {
-	
+	fprint(2, "tsscriptescddash not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptescless(void)
 {
+	fprint(2, "tsscriptescless not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptescendopen(void)
 {
+	fprint(2, "tsscriptescendopen not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptescendname(void)
 {
+	fprint(2, "tsscriptescendname not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdescstart(void)
 {
+	fprint(2, "tsscriptdescstart not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdesc(void)
 {
+	fprint(2, "tsscriptdesc not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdescdash(void)
 {
+	fprint(2, "tsscriptdescdash not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdescddash(void)
 {
+	fprint(2, "tsscriptdescddash not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdescless(void)
 {
+	fprint(2, "tsscriptdescless not implemented\n");
+	tstate = TSDATA;
 }
 
 
 void
 tsscriptdescend(void)
 {
+	fprint(2, "tsscriptdescend not implemented\n");
+	tstate = TSDATA;
 }
 
 
@@ -928,7 +1264,7 @@ tsrawtendname(void)
 	} else {
 		temit(chartok('<'));
 		temit(chartok('/'));
-		temitbuf();
+		temitbuf(ctempbuf);
 		treconsume = 1;
 		tstate = TSRAWT;
 	}
@@ -938,7 +1274,7 @@ void
 tsrawtendopen(void)
 {
 	if (ALPHA(tc) != 0) {
-		//TODO create new end tag token
+		ctoken = newtok(TEND);
 		treconsume = 1;
 		tstate = TSRAWT;
 	} else {
@@ -982,7 +1318,7 @@ tsrcdtendname(void)
 	} else {
 		temit(chartok('<'));
 		temit(chartok('/'));
-		temitbuf();
+		temitbuf(ctempbuf);
 		treconsume = 1;
 		tstate = TSRCDT;
 	}
@@ -992,7 +1328,7 @@ void
 tsrcdtendopen(void)
 {
 	if (ALPHA(tc) != 0) {
-		//TODO create new end tag token
+		ctoken = newtok(TEND);
 		treconsume = 1;
 		tstate = TSRCDT_END_NAME;
 	} else {
@@ -1019,32 +1355,34 @@ tsrcdtless(void)
 void
 tstagname(void)
 {
-	uint err;
-	err = REPCHAR;
-	if (talpha(tc) != 0) return;
 	switch (tc) {
 	case '\t':
 	case '\n':
 	case '\r':
 	case ' ':
+		s_terminate(ctoken->name);
 		tstate = TSANAME_BEFORE;
 		break;
 	case '/':
+		s_terminate(ctoken->name);
 		tstate = TSSCSTAG;
 		break;
 	case '>':
-		// TODO emit tag
+		s_terminate(ctoken->name);
+		temit(ctoken);
 		tstate = TSDATA;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
-		s_nappend(ctoken->name, (char*)&err, 2);
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
+		s_putc(ctoken->name, REPCHAR);
 		break;
 	case -1:
-		fprint(2, "eof in tag parse error\n");
+		fprint(2, "eof in tag parse error, tc='%c'\n", tc);
 		teof = 1;
 		temit(eoftok());
 		break;
+	default:
+		talpha(1);
 	} 
 }
 
@@ -1052,23 +1390,23 @@ void
 tsetagopen(void)
 {
 	if (ALPHA(tc) != 0) {
-		// TODO: create new tag token
+		ctoken = newtok(TEND);
 		treconsume = 1;
 		tstate = TSTAG_NAME;
 	} else switch (tc) {
 	case '>':
-		fprint(2, "missing end tag name parse error\n");
+		fprint(2, "missing end tag name parse error, tc='%c'\n", tc);
 		tstate = TSDATA;
 		break;
 	case -1:
-		fprint(2, "eof before tag name parse error\n");
+		fprint(2, "eof before tag name parse error, tc='%c'\n", tc);
 		temit(chartok('<'));
 		teof = 1;
 		temit(eoftok());
 		break;
 	default:
-		fprint(2, "invalid first character of tag name parse error\n");
-		//TODO: create comment token
+		fprint(2, "invalid first character of tag name parse error, tc='%c'\n", tc);
+		ctoken = newtok(TCOMM);
 		treconsume = 1;
 		tstate = TSBOGUS_COMMENT;
 	}
@@ -1078,7 +1416,7 @@ void
 tstagopen(void)
 {
 	if (ALPHA(tc) != 0) {
-		// TODO: create new tag token
+		ctoken = newtok(TSTART);
 		treconsume = 1;
 		tstate = TSTAG_NAME;
 	} else switch (tc) {
@@ -1089,8 +1427,8 @@ tstagopen(void)
 		tstate = TSETAG_OPEN;
 		break;
 	case '?':
-		fprint(2, "unexpected question mark instead of tag name parse error\n");
-		// TODO create comment token
+		fprint(2, "unexpected question mark instead of tag name parse error, tc='%c'\n", tc);
+		ctoken = newtok(TCOMM);
 		treconsume = 1;
 		tstate = TSBOGUS_COMMENT;
 		break;
@@ -1101,7 +1439,7 @@ tstagopen(void)
 		temit(eoftok());
 		break;
 	default:
-		fprint(2, "invalid first character of tag name parse error\n");
+		fprint(2, "invalid first character of tag name parse error, tc='%c'\n", tc);
 		temit(chartok('<'));
 		treconsume = 1;
 		tstate = TSDATA;
@@ -1113,7 +1451,7 @@ tsptxt(void)
 {
 	switch (tc) {
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(REPCHAR)); 
 		break;
 	case -1: /* EOF */
@@ -1133,7 +1471,7 @@ tsscript(void)
 		tstate = TSSCRIPT_LESS;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(REPCHAR));
 		break;
 	case -1: /* EOF */
@@ -1153,7 +1491,7 @@ tsrawt(void)
 		tstate = TSRAWT_LESS;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(REPCHAR));
 		break;
 	case -1: /* EOF */
@@ -1170,14 +1508,14 @@ tsrcdt(void)
 {
 	switch (tc) {
 	case '&':
-		trstate = TSRCDT;
+		treturn = TSRCDT;
 		tstate = TSCREF;
 		break;
 	case '<':
 		tstate = TSRCDT_LESS;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(REPCHAR));
 		break;
 	case -1: /* EOF */
@@ -1194,14 +1532,14 @@ tsdata(void)
 {
 	switch (tc) {
 	case '&':
-		trstate = TSDATA;
+		treturn = TSDATA;
 		tstate = TSCREF;
 		break;
 	case '<':
 		tstate = TSTAG_OPEN;
 		break;
 	case '\0':
-		fprint(2, "unexpected null character parse error\n");
+		fprint(2, "unexpected null character parse error, tc='%c'\n", tc);
 		temit(chartok(tc));
 		break;
 	case -1: /* EOF */
@@ -1216,31 +1554,41 @@ tsdata(void)
 int
 talpha(int tolower)
 {
-	char buf[UTFmax];
-	int n;
 	if (ALPHA(tc) == 0) return 0;
-	n = runetochar(buf, &tc);
-	s_nappend(ctempbuf, buf, n);
+	s_putc(ctempbuf, tc);
 	if ((tolower != 0) && (tc < 'a')) tc+=0x20;
-	n = runetochar(buf, &tc);
-	s_nappend(ctoken->name, buf, n);
+	s_putc(ctoken->name, tc);
 	return 1;
 }
 
 void
 tconsume(void)
 {
-	if (treconsume == 0) tc = gc();
-	treconsume = 0;
+	char *buf;
+	if (treconsume != 0) {
+		treconsume = 0;
+		return;
+	}
+	buf = s_to_c(clookaheadbuf);
+	if (buf[0] != '\0') {
+		tc = buf[0];
+		print("tc = %uX\n", tc);
+		/* TODO make this code utf-aware */
+		String *shift;
+		shift = s_copy(buf+1);
+		s_free(clookaheadbuf);
+		clookaheadbuf = shift;
+	}
+	else tc = gc();
 }
 
 void
-temitbuf(void)
+temitbuf(String *str)
 {
 	Rune r;
 	char *buf;
 	int n, len;
-	buf = s_to_c(ctempbuf);
+	buf = s_to_c(str);
 	len = strlen(buf);
 	for (n = 0; n < len; n += chartorune(&r, buf+n)){
 		temit(chartok(r));
@@ -1251,18 +1599,7 @@ temitbuf(void)
 void
 temit(Token *t)
 {
-	switch (t->type){
-	case TCHAR:
-		if (t->c == '\n') print("TCHAR \\n\n");
-		else print("TCHAR %C\n", t->c);
-		break;
-	case TEOF:
-		print("TEOF\n");
-		break;
-	default:
-		print("TYPE %d\n", t->type);
-	}
-	t_free(t);
+	send(outchannel, &t);
 }
 
 int
@@ -1281,61 +1618,21 @@ gc(void) /* getchar func name is reserved by stdio.h */
 }
 
 void
-usage(void)
+threadtokenize(void *v)
 {
-	fprint(2, "usage: %s [-m /n/dom] [-n 123]\n", argv0);
-	threadexitsall("usage");
-}
-
-void
-threadmain(int argc, char **argv)
-{
-	//Dir *d;
-	ARGBEGIN{
-	case 'm':
-		drpath = EARGF(usage());
-		break;
-	case 'n':
-		tpath = EARGF(usage());
-	default:
-		usage();
-	} ARGEND;
-	if (argc != 0) usage();
-	/*
-	d = dirstat(drpath);
-	if (d==nil) sysfatal("%r");
-	if ((d->mode & DMDIR) == 0) sysfatal("%s - not a directory", drpath);
-	if (chdir(drpath) == 0) sysfatal("%r");
-	if (tpath == nil) {
-		char *buf[128];
-		long n;
-		int fd;
-		fd = open("new");
-		if (fd < 0) sysfatal("can't open %s/new. %r", drpath);
-		n = read(fd, buf, 128);
-		if (n <= 0) sysfatal("failed to read from %s/new. %r", drpath);
-		tpath = mallocz(n+1);
-		memmove(tpath, buf, n);
-		close(fd);
-		fprint(1, "%s/%s\n", drpath, tpath);
-	}
-	if (chdir(tpath) == 0) sysfatal("%r");
-	*/
-
-	print("--- START ---\n");
+	Tokctl *tc;
+	tc = v;
+	outchannel = tc->c;
 	teof = 0;
+	threadsetname("tokenizer");
 	ctempbuf = s_new();
-	while(teof == 0){
+	clookaheadbuf = s_new();
+	while (teof == 0) {
 		if (tstate >= TMAX) {
-			fprint(2, "unknown tstate %d\n", tstate);
-			break;
-		}
-		if (tstab[tstate] == nil) {
-			fprint(2, "tstate %d not implemented\n", tstate);
+			fprint(2, "[TOKENIZER] unknown tstate %d\n", tstate);
 			break;
 		}
 		tconsume();
 		tstab[tstate]();
 	}
-	print("--- OVER ---\n");
 }
