@@ -1,0 +1,19 @@
+#!/bin/rc
+
+fn getparent{
+	node=$1
+	parent=`{awk '/parent.*/ {print $2}' $node/ctl}
+	echo $parent
+}
+
+for (node in `{walk -d}){
+	type = `{cat $node/type}
+	parent = `{getparent $node}
+	echo -n $node $parent $type' '
+	switch ($type) {
+		case 'element' 'doctype'
+			name = `{cat $node/name}
+			echo -n $name
+	}
+	echo
+}
