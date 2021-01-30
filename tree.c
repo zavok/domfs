@@ -40,6 +40,46 @@ newnode(void)
 	return strnode;
 }
 
+char*
+getparent(char *node)
+{
+	int fd;
+	long n;
+	char *path;
+	char buf[1024];
+	char *args[8];
+	char *start, *end;
+	if (strcmp(node, "0") == 0) return strdup("0");
+	path = smprint("%s/%s/ctl", tctl->treeroot, node);
+	fd = open(path, OREAD);
+	if (fd < 0) sysfatal("failed to open %s, %r", path);
+	free(path);
+	n = readn(fd, buf, 1024);
+	close(fd);
+	buf[n] = '\0';
+	start = buf;
+	while (start < buf + n) {
+		for (end = start; *end != '\n'; end++)
+			if (*end == '\0') return 0;
+		*end = '\0';
+		tokenize(start, args, 8);
+		if (strcmp(args[0], "parent") == 0)
+			return strdup(args[1]);
+	}
+	return 0;
+}
+
+void
+adopt(char *parent, char *child)
+{
+	char buf[1024];
+	long n;
+	if (strcmp(parent, "0") != 0){
+		n = snprint(buf, 1024, "adopt %s", child);
+		nwrite(parent, "ctl", buf, n);
+	}
+}
+
 void
 pushchar(Rune c)
 {
@@ -58,18 +98,22 @@ pushtext(void)
 	nwrite(tnode, "text", s_to_c(tstr), strlen(s_to_c(tstr)));
 	s_free(tstr);
 	tstr = nil;
+	free(tnode);
 	tnode = nil;
 }
 
 void
 threadtreeconstr(void *v)
 {
+	char *tp;
 	char *strnode;
+	char *pnode;
 	int teof;
 	Token *tok;
 	teof = 0;
 	tctl = v;
 	tok = nil;
+	pnode = strdup("0");
 	threadsetname("treeconstr");
 	while(teof == 0){
 		recv(tctl->in, &tok);
@@ -87,10 +131,20 @@ threadtreeconstr(void *v)
 			nwrite(strnode, "type", "element", 7);
 			nwrite(strnode, "name", s_to_c(tok->name),
 				strlen(s_to_c(tok->name)));
+			adopt(pnode, strnode);
+			tp = pnode;
+			pnode = strdup(strnode);
+			free(tp);
 			free(strnode);
 			break;
 		case TEND:
-			if (tnode != nil) pushtext();
+			if (tnode != nil) {
+				adopt(pnode, tnode);
+				pushtext();
+			}
+			tp = pnode;
+			pnode = getparent(pnode);
+			free(tp);
 			break;
 		case TCHAR:
 			pushchar(tok->c);
