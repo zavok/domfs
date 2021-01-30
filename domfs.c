@@ -684,8 +684,6 @@ main(int argc, char **argv)
 	stackpush(&files, rootf);
 	fnew = newfinf(TNEW, &rootf);
 	stackpush(&files, fnew);
-
-	stackpush(&trees, newtree());
 	
 	Srv fs = {
 		.attach = fsattach,
