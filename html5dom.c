@@ -56,6 +56,8 @@ threadmain(int argc, char **argv)
 	trc = malloc(sizeof(Treeconstrctl));
 	trc->treeroot = ".";
 	trc->in = tc->c;
+
+
 	threadcreate(threadtokenize, tc, 64 * 1024);
 	threadcreate(threadtreeconstr, trc, 64 * 1024);
 }
