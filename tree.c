@@ -135,10 +135,12 @@ threadtreeconstr(void *v)
 			nwrite(strnode, "name", s_to_c(tok->name),
 				strlen(s_to_c(tok->name)));
 			adopt(pnode, strnode);
-			tp = pnode;
-			pnode = strdup(strnode);
-			free(tp);
-			free(strnode);
+			if ((tok->flags & TF_SELF_CLOSING) == 0) {
+				tp = pnode;
+				pnode = strdup(strnode);
+				free(tp);
+				free(strnode);
+			}
 			break;
 		case TEND:
 			if (tnode != nil) {
