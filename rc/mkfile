@@ -1,0 +1,9 @@
+BIN=\
+	domdump\
+	domprint\
+
+install:V:
+	cp $BIN /rc/bin
+
+uninstall:V:
+	for (bin in $BIN) rm -f /rc/bin/$bin
