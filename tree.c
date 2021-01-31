@@ -126,7 +126,10 @@ threadtreeconstr(void *v)
 			free(strnode);
 			break;
 		case TSTART:
-			if (tnode != nil) pushtext();
+			if (tnode != nil) {
+				adopt(pnode, tnode);
+				pushtext();
+			}
 			strnode = newnode();
 			nwrite(strnode, "type", "element", 7);
 			nwrite(strnode, "name", s_to_c(tok->name),
