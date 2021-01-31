@@ -1,0 +1,7 @@
+#!/bin/rc
+
+for (n in `{walk -d -n1}) {
+	type=`{cat $n/type}
+	if (test ($type '=' text) -a (-f $n/text))
+		cat $n/text
+}
