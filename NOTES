@@ -1,0 +1,105 @@
+# new tree concept suggestion:
+
+I think this new design will be easier to implement and work with.
+
+## root
+
+Contains numbered directories representing different documents,
+as well as special 'new' file:
+
+````
+/1
+ 2
+ 3
+ new
+````
+
+On read from 'new' server will create new document and return it's
+number.
+
+## document
+
+Contains numbered files representing different nodes of a document
+tree, as well as special 'new', 'tree' and 'ctl' files.
+
+
+````
+/1/1
+   2
+   3
+   4
+   ...
+   ctl
+   new
+   tree
+````
+
+Reading from 'new' creates new node, but alternatively you can just
+write to files with numbered names directly.
+
+## ctl
+
+user can write commands there.
+
+at minimum there should be 'adopt parent child' command
+
+## tree
+
+Contains tree structure.
+
+example:
+
+````
+1
+ 2
+ 3
+  4
+ 5
+  6
+  7
+ 8
+9
+10
+11
+12
+````
+
+Optionally we can include short description of the node after it's
+number.
+
+example:
+
+````
+1 element docroot
+ 2 element document
+ 3 element html
+  4 element head
+   5 element title
+  6 element body
+   7 element p
+    8 text Hello World!!! Lorem ips...
+````
+
+
+## node
+
+Contains node info.
+
+General structure is:
+
+````
+type
+data
+````
+
+What data is depends on type.  For text nodes it's text, for element
+nodes it's attributes.
+
+example:
+
+````
+element
+a
+id="logo"
+href="www.example.org/logo.jpg"
+````
